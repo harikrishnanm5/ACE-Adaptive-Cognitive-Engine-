@@ -1,0 +1,7 @@
+{
+  "name": "AI Notebook",
+  "description": "A NotebookLM-inspired AI research assistant. Upload sources, chat with your data, and generate study guides or audio overviews.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

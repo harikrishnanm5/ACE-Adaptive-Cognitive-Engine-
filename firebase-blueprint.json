@@ -1,0 +1,93 @@
+{
+  "entities": {
+    "Notebook": {
+      "title": "Notebook",
+      "description": "A collection of sources and AI-generated content.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "The title of the notebook." },
+        "createdAt": { "type": "number", "description": "Timestamp of creation." },
+        "ownerId": { "type": "string", "description": "The UID of the owner." },
+        "lastModified": { "type": "number", "description": "Timestamp of last modification." }
+      },
+      "required": ["title", "createdAt", "ownerId"]
+    },
+    "Source": {
+      "title": "Source",
+      "description": "A source document connected to a notebook.",
+      "type": "object",
+      "properties": {
+        "notebookId": { "type": "string", "description": "The ID of the parent notebook." },
+        "name": { "type": "string", "description": "Name of the source." },
+        "content": { "type": "string", "description": "Content of the source." },
+        "type": { "type": "string", "description": "MIME type or category." },
+        "sourceType": { "type": "string", "enum": ["text", "url", "audio", "video"] },
+        "size": { "type": "number", "description": "Size in bytes." },
+        "authorId": { "type": "string", "description": "UID of the author." },
+        "createdAt": { "type": "number", "description": "Timestamp of creation." }
+      },
+      "required": ["notebookId", "name", "content", "sourceType", "authorId", "createdAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "A message in a notebook's chat.",
+      "type": "object",
+      "properties": {
+        "notebookId": { "type": "string", "description": "The ID of the parent notebook." },
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "content": { "type": "string", "description": "The message text." },
+        "authorId": { "type": "string", "description": "UID of the author." },
+        "createdAt": { "type": "number", "description": "Timestamp of creation." }
+      },
+      "required": ["notebookId", "role", "content", "createdAt"]
+    },
+    "Note": {
+      "title": "Note",
+      "description": "A user note in a notebook.",
+      "type": "object",
+      "properties": {
+        "notebookId": { "type": "string", "description": "The ID of the parent notebook." },
+        "content": { "type": "string", "description": "The note content." },
+        "authorId": { "type": "string", "description": "UID of the author." },
+        "createdAt": { "type": "number", "description": "Timestamp of creation." }
+      },
+      "required": ["notebookId", "content", "authorId", "createdAt"]
+    },
+    "NotebookVersion": {
+      "title": "NotebookVersion",
+      "description": "A snapshot of a notebook's content.",
+      "type": "object",
+      "properties": {
+        "notebookId": { "type": "string", "description": "The ID of the parent notebook." },
+        "content": { "type": "string", "description": "The notebook content at this version." },
+        "createdAt": { "type": "number", "description": "Timestamp of creation." },
+        "authorId": { "type": "string", "description": "UID of the author." },
+        "authorName": { "type": "string", "description": "Name of the author." },
+        "note": { "type": "string", "description": "Optional note for this version." }
+      },
+      "required": ["notebookId", "content", "createdAt", "authorId", "authorName"]
+    }
+  },
+  "firestore": {
+    "/notebooks/{notebookId}": {
+      "schema": "Notebook",
+      "description": "User notebooks."
+    },
+    "/notebooks/{notebookId}/sources/{sourceId}": {
+      "schema": "Source",
+      "description": "Sources within a notebook."
+    },
+    "/notebooks/{notebookId}/chatMessages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Chat messages within a notebook."
+    },
+    "/notebooks/{notebookId}/notes/{noteId}": {
+      "schema": "Note",
+      "description": "Notes within a notebook."
+    },
+    "/notebooks/{notebookId}/versions/{versionId}": {
+      "schema": "NotebookVersion",
+      "description": "Versions of a notebook."
+    }
+  }
+}
