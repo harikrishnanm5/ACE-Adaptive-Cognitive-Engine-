@@ -26,13 +26,35 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
   const socketRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const accumulatedTranscriptRef = useRef<string>('');
 
   const stopSpeaking = useCallback(() => {
     if (audioSourceRef.current) {
-      audioSourceRef.current.stop();
+      try {
+        audioSourceRef.current.stop();
+      } catch (e) {
+        // Already stopped
+      }
       audioSourceRef.current = null;
     }
     setIsSpeaking(false);
+  }, []);
+
+  const stopListening = useCallback(() => {
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+    if (socketRef.current) {
+      socketRef.current.close();
+      socketRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+    }
+    setIsListening(false);
   }, []);
 
   const speakText = async (text: string) => {
@@ -62,7 +84,15 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
       const source = audioContextRef.current.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioContextRef.current.destination);
-      source.onended = () => setIsSpeaking(false);
+      
+      source.onended = () => {
+        setIsSpeaking(false);
+        // Automatically start listening if the AI asked a question
+        if (text.trim().endsWith('?')) {
+          toggleListening();
+        }
+      };
+
       source.start(0);
       audioSourceRef.current = source;
     } catch (err) {
@@ -76,6 +106,14 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
     setAiResponse('');
     
     try {
+      if (sources.length === 0) {
+        const noSourceMessage = "I'm ready to help, but your notebook is empty. Please add at least one source (like a document, URL, or video) so we can start our lesson!";
+        setAiResponse(noSourceMessage);
+        await speakText(noSourceMessage);
+        setIsProcessing(false);
+        return;
+      }
+
       const sourceContext = sources.map(s => `Source: ${s.name}\nContent: ${s.content}`).join('\n\n');
       const completion = await groq.chat.completions.create({
         messages: [
@@ -105,14 +143,23 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
   };
 
   const toggleListening = async () => {
+    // If currently speaking or processing, an interruption occurred. 
+    // We want to stop everything and start listening fresh.
+    if (isSpeaking || isProcessing) {
+      stopSpeaking();
+      setIsProcessing(false);
+      setAiResponse('');
+    }
+
     if (isListening) {
-      if (socketRef.current) socketRef.current.close();
-      if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
-      setIsListening(false);
+      stopListening();
       return;
     }
 
     try {
+      setTranscript('');
+      accumulatedTranscriptRef.current = '';
+      
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
@@ -133,11 +180,25 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
       socket.onmessage = (message) => {
         const data = JSON.parse(message.data);
         const transcriptText = data.channel?.alternatives?.[0]?.transcript;
+        
         if (transcriptText) {
           setTranscript(transcriptText);
+          
           if (data.is_final) {
-            getAIResponse(transcriptText);
+            accumulatedTranscriptRef.current += ' ' + transcriptText;
           }
+
+          // Reset silence timeout
+          if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+          
+          silenceTimeoutRef.current = setTimeout(() => {
+            const finalInput = accumulatedTranscriptRef.current.trim();
+            if (finalInput) {
+              stopListening();
+              getAIResponse(finalInput);
+              accumulatedTranscriptRef.current = '';
+            }
+          }, 2000); // 2 seconds silence
         }
       };
 
@@ -150,11 +211,10 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
 
   useEffect(() => {
     return () => {
-      if (socketRef.current) socketRef.current.close();
-      if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
+      stopListening();
       stopSpeaking();
     };
-  }, [stopSpeaking]);
+  }, [stopListening, stopSpeaking]);
 
   return (
     <motion.div 
@@ -219,10 +279,10 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
         <div className="flex items-center gap-8">
           <button 
             onClick={toggleListening}
-            disabled={isProcessing || isSpeaking}
+            disabled={isProcessing}
             className={`w-24 h-24 rounded-full flex items-center justify-center transition-all shadow-2xl disabled:opacity-50 ${isListening ? 'bg-red-500 text-white animate-pulse shadow-red-500/20' : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-500/20'}`}
           >
-            {isListening ? <MicOff className="w-8 h-8" /> : <Mic className="w-8 h-8" />}
+            {isListening ? <MicOff className="w-8 h-8" /> : (isSpeaking ? <Zap className="w-8 h-8 animate-pulse" /> : <Mic className="w-8 h-8" />)}
           </button>
           
           {isSpeaking && (

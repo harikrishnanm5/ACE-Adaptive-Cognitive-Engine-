@@ -146,7 +146,7 @@ interface Note {
   content: string;
   createdAt: number;
   authorId: string;
-  type?: 'text' | 'audio';
+  type?: 'text' | 'audio' | 'slides' | 'video' | 'mindmap' | 'report' | 'flashcards' | 'quiz' | 'infographic' | 'datatable' | 'code' | 'analysis';
   sourceCount?: number;
 }
 
