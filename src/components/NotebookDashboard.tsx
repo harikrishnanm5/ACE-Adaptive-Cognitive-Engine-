@@ -27,7 +27,7 @@ interface NotebookDashboardProps {
   setDashboardSearchQuery: (query: string) => void;
   sortBy: 'recent' | 'title' | 'created';
   setSortBy: (sort: 'recent' | 'title' | 'created') => void;
-  createNewNotebook: () => Promise<string | undefined>;
+  createNewNotebook: (title?: string, initialMessage?: string) => Promise<string | undefined>;
   deleteNotebook: (id: string) => Promise<void>;
   setCurrentNotebookId: (id: string) => void;
   logout: () => void;
@@ -84,7 +84,7 @@ export const NotebookDashboard: React.FC<NotebookDashboardProps> = ({
               <p className="text-slate-400 text-lg">You have {notebooks.length} notebooks across your projects.</p>
             </div>
             <button 
-              onClick={createNewNotebook}
+              onClick={() => createNewNotebook()}
               className="px-6 py-4 bg-indigo-600 text-white rounded-2xl font-bold hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-500/20 flex items-center gap-3 self-start md:self-center group"
             >
               <Plus className="w-5 h-5 group-hover:rotate-90 transition-transform" />
@@ -102,11 +102,33 @@ export const NotebookDashboard: React.FC<NotebookDashboardProps> = ({
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {[
-                { title: 'Research Paper Analysis', desc: 'Deep dive into academic papers with AI-powered summaries.', icon: FileText, color: 'bg-blue-500' },
-                { title: 'Meeting Strategist', desc: 'Transform meeting transcripts into actionable items.', icon: MessageSquare, color: 'bg-purple-500' },
-                { title: 'Exam Preparation', desc: 'Generate quizzes and flashcards from your study notes.', icon: GraduationCap, color: 'bg-emerald-500' }
+                { 
+                  title: 'Research Paper Analysis', 
+                  desc: 'Deep dive into academic papers with AI-powered summaries.', 
+                  icon: FileText, 
+                  color: 'bg-blue-500',
+                  initialMessage: "Welcome to Research Paper Analysis! 📄 I'm ready to help you deep-dive into your academic papers. Please upload your PDF or paste the abstract to get started."
+                },
+                { 
+                  title: 'Meeting Strategist', 
+                  desc: 'Transform meeting transcripts into actionable items.', 
+                  icon: MessageSquare, 
+                  color: 'bg-purple-500',
+                  initialMessage: "Welcome to Meeting Strategist! 🤝 I'll help you extract actionable items and summaries from your meetings. Upload a transcript or paste your meeting notes to begin."
+                },
+                { 
+                  title: 'Exam Preparation', 
+                  desc: 'Generate quizzes and flashcards from your study notes.', 
+                  icon: GraduationCap, 
+                  color: 'bg-emerald-500',
+                  initialMessage: "Welcome to Exam Preparation! 🎓 Let's get you ready for your tests. Upload your study material, and I can help you generate flashcards, quizzes, and mind maps."
+                }
               ].map((template, i) => (
-                <div key={i} className="group p-6 bg-slate-900 border border-white/5 rounded-3xl hover:border-indigo-500/30 transition-all cursor-pointer relative overflow-hidden shadow-lg border-2 border-transparent">
+                <div 
+                  key={i} 
+                  onClick={() => createNewNotebook(`${template.title}: ${new Date().toLocaleDateString()}`, template.initialMessage)}
+                  className="group p-6 bg-slate-900 border border-white/5 rounded-3xl hover:border-indigo-500/30 transition-all cursor-pointer relative overflow-hidden shadow-lg border-2 border-transparent"
+                >
                   <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 blur-3xl rounded-full -mr-16 -mt-16 group-hover:bg-indigo-500/10 transition-all" />
                   <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center text-white mb-4 shadow-lg", template.color)}>
                     <template.icon className="w-6 h-6" />
@@ -170,7 +192,7 @@ export const NotebookDashboard: React.FC<NotebookDashboardProps> = ({
                   <p className="text-sm text-slate-500">Create your first notebook to start researching.</p>
                 </div>
                 <button 
-                  onClick={createNewNotebook}
+                  onClick={() => createNewNotebook()}
                   className="px-6 py-3 bg-white/5 hover:bg-white/10 text-white rounded-2xl text-sm font-bold transition-all border border-white/10"
                 >
                   Create Notebook

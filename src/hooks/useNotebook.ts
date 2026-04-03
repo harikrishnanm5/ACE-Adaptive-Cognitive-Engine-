@@ -136,17 +136,29 @@ export function useNotebook(user: User | null) {
     };
   }, [user, currentNotebookId]);
 
-  const createNewNotebook = async () => {
+  const createNewNotebook = async (title?: string, initialMessage?: string) => {
     if (!user) return;
     const id = Math.random().toString(36).substring(7);
     const newNotebook = {
       id,
-      title: 'Untitled Notebook',
+      title: title || 'Untitled Notebook',
       ownerId: user.id,
       createdAt: Date.now(),
       lastModified: Date.now()
     };
     await setDoc(doc(db, 'notebooks', id), newNotebook);
+    
+    if (initialMessage) {
+      const msgId = Math.random().toString(36).substring(7);
+      await setDoc(doc(db, 'notebooks', id, 'chatMessages', msgId), {
+        id: msgId,
+        notebookId: id,
+        role: 'assistant',
+        content: initialMessage,
+        createdAt: Date.now()
+      });
+    }
+
     setCurrentNotebookId(id);
     return id;
   };
