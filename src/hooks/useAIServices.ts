@@ -1,4 +1,5 @@
 import Groq from 'groq-sdk';
+// Using fetch for Deepgram to avoid SDK bundling/versioning issues in browser while using the latest nova-3 model
 
 // ===== Groq Key Rotation System =====
 const GROQ_API_KEYS = [
@@ -82,9 +83,78 @@ export async function groqProcessImage(base64Data: string, mimeType: string, pro
   throw lastError;
 }
 
-// ===== Groq Whisper (audio/video transcription) =====
+// ===== Deepgram STT (audio/video transcription via REST API) =====
+export async function deepgramTranscribeAudio(audioBlob: Blob): Promise<string> {
+  const apiKey = process.env.DEEPGRAM_API_KEY;
+  if (!apiKey) throw new Error("Deepgram API Key not found");
+
+  try {
+    // Using nova-3 as requested for maximum speed and accuracy
+    const response = await fetch('https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&language=en', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Token ${apiKey}`,
+        'Content-Type': audioBlob.type || 'audio/webm'
+      },
+      body: audioBlob
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Deepgram Transcription failed: ${response.status} ${errorText}`);
+    }
+
+    const result = await response.json();
+    return result.results?.channels[0]?.alternatives[0]?.transcript || "";
+  } catch (err) {
+    console.error("Deepgram Transcription failed:", err);
+    throw err;
+  }
+}
+
+// ===== Deepgram STT (URL transcription via REST API) =====
+export async function deepgramTranscribeUrl(url: string): Promise<string> {
+  const apiKey = process.env.DEEPGRAM_API_KEY;
+  if (!apiKey) throw new Error("Deepgram API Key not found");
+
+  try {
+    const response = await fetch('https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&language=en', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Token ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ url })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Deepgram URL Transcription failed: ${response.status} ${errorText}`);
+    }
+
+    const result = await response.json();
+    return result.results?.channels[0]?.alternatives[0]?.transcript || "";
+  } catch (err) {
+    console.error("Deepgram URL Transcription failed:", err);
+    throw err;
+  }
+}
+
+// ===== Transcription Service (Deepgram primary, Groq fallback) =====
+export async function transcribeAudio(audioBlob: Blob, filename = "audio.webm"): Promise<string> {
+  console.log(`🎙️ Transcribing ${filename} (${audioBlob.size} bytes)...`);
+  
+  try {
+    return await deepgramTranscribeAudio(audioBlob);
+  } catch (err) {
+    console.warn("⚠️ Deepgram failed, falling back to Groq Whisper:", err);
+    return await groqTranscribeAudio(audioBlob, filename);
+  }
+}
+
+// ===== Groq Whisper (backup transcription) =====
 export async function groqTranscribeAudio(audioBlob: Blob, filename = "audio.webm"): Promise<string> {
-  let lastError: any;
+  let lastError: any = new Error("No transcription could be completed (available keys exhausted or model error).");
   for (let attempt = 0; attempt < GROQ_API_KEYS.length; attempt++) {
     try {
       const client = getGroqClient();
@@ -97,10 +167,10 @@ export async function groqTranscribeAudio(audioBlob: Blob, filename = "audio.web
       return typeof transcription === 'string' ? transcription : (transcription as any).text || "";
     } catch (error: any) {
       lastError = error;
-      if (error?.status === 429 || error?.message?.includes('rate_limit')) {
-        if (!rotateGroqKey()) { currentGroqKeyIndex = 0; throw new Error("All Groq keys rate-limited for transcription."); }
-      } else {
-        throw error;
+      console.warn(`⚠️ Groq key #${currentGroqKeyIndex + 1} attempt failed:`, error.message || error);
+      if (!rotateGroqKey()) {
+        currentGroqKeyIndex = 0;
+        break;
       }
     }
   }
@@ -157,19 +227,53 @@ export async function deepgramTTS(text: string): Promise<Blob> {
   return new Blob(blobs, { type: 'audio/mpeg' });
 }
 
-// ===== LM Studio (local fallback) =====
-export async function lmStudioChatCompletion(messages: any[], model = "lmstudio-community/Llama-3.2-3B-Instruct-GGUF", temperature = 0.7) {
+// ===== LM Studio Helpers (Local AI) =====
+async function getLMStudioModel(): Promise<string> {
+  const preferredModel = "qwen2.5-coder-3b-instruct";
   try {
-    const response = await fetch('http://127.0.0.1:1234/v1/chat/completions', {
+    const response = await fetch('http://localhost:1234/v1/models');
+    if (!response.ok) return preferredModel;
+    const data = await response.json();
+    
+    // 1. Try to find the exact preferred model
+    const foundExact = data.data?.find((m: any) => m.id.includes(preferredModel));
+    if (foundExact) return foundExact.id;
+    
+    // 2. Return the first available model if preferred not found
+    return data.data?.[0]?.id || preferredModel;
+  } catch {
+    return preferredModel;
+  }
+}
+
+export async function lmStudioChatCompletion(messages: any[]) {
+  try {
+    // 1. Auto-detect the loaded model (prioritizing Qwen2.5-Coder)
+    const loadedModel = await getLMStudioModel();
+    
+    // 2. Send the completion request with strict CORS settings
+    const response = await fetch('http://localhost:1234/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, model, temperature })
+      headers: { 
+        'Content-Type': 'application/json'
+      },
+      mode: 'cors', // Ensure CORS is handled
+      body: JSON.stringify({
+        model: loadedModel,
+        messages,
+        temperature: 0.7
+      })
     });
-    if (!response.ok) throw new Error('LM Studio unreachable');
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error(`❌ LM Studio Error (${response.status}):`, errorData);
+      throw new Error(`LM Studio rejected the request (Status ${response.status}). Check if the correct model is loaded.`);
+    }
     return await response.json();
-  } catch (error) {
-    console.warn('LM Studio failed:', error);
-    throw error;
+  } catch (error: any) {
+    console.error('❌ LM Studio Connection Failed:', error);
+    throw new Error(error.message || 'LM Studio unreachable. Ensure the local server is running on port 1234.');
   }
 }
 
@@ -178,6 +282,7 @@ export function useAIServices() {
     groqChatCompletion,
     groqProcessImage,
     groqTranscribeAudio,
+    transcribeAudio,
     deepgramTTS,
     lmStudioChatCompletion,
   };

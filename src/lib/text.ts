@@ -13,7 +13,6 @@ export function stripMarkdown(text: string): string {
     .replace(/_/g, '')            // Underscore italic
     .replace(/\[|\]|\(|\)/g, '')  // Brackets/Links
     .replace(/`|~/g, '')          // Code/Strikethrough
-    .replace(/[:]/g, '')          // Colons (which can sometimes be weird in TTS)
     .trim();
 }
 
@@ -23,4 +22,13 @@ export function stripMarkdown(text: string): string {
 export function getSafeTitle(content: string): string {
   const firstLine = content.split('\n')[0];
   return stripMarkdown(firstLine.replace(/^Title: |Generated |:/gi, ''));
+}
+/**
+ * Truncates source context to fit within standard local LLM context windows (e.g., 4096 tokens).
+ * 12,000 characters is a safe limit that leaves ~1,000 tokens for the prompt and generated response.
+ */
+export function truncateContext(text: string, maxChars = 12000): string {
+  if (!text || text.length <= maxChars) return text;
+  
+  return text.substring(0, maxChars) + "\n\n[... Context Truncated for 4k Token Performance ...]";
 }

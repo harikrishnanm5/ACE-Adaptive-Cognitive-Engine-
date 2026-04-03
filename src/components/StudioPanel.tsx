@@ -39,6 +39,7 @@ interface StudioPanelProps {
   studioContent: { type: string; content: string } | null;
   setStudioContent: (content: { type: string; content: string } | null) => void;
   currentNotebookId: string | null;
+  notebookTitle?: string;
   user: User;
   sources: Source[];
   notes: Note[];
@@ -57,6 +58,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
   studioContent,
   setStudioContent,
   currentNotebookId,
+  notebookTitle,
   user,
   sources,
   notes,
@@ -85,6 +87,24 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
     { id: 'flashcards', label: 'Flashcards', icon: StickyNote },
     { id: 'quiz', label: 'Quiz', icon: HelpCircle },
   ];
+
+  // Strictly filter tools based on notebook type/title
+  const filteredTools = React.useMemo(() => {
+    if (!notebookTitle) return tools;
+    
+    const title = notebookTitle.toLowerCase();
+    if (title.includes('meeting strategist')) {
+      return tools.filter(t => ['audio', 'report', 'mindmap'].includes(t.id));
+    }
+    if (title.includes('research paper analysis')) {
+      return tools.filter(t => ['report', 'mindmap', 'audio'].includes(t.id));
+    }
+    if (title.includes('exam preparation')) {
+      return tools.filter(t => ['flashcards', 'quiz', 'mindmap'].includes(t.id));
+    }
+    
+    return tools;
+  }, [notebookTitle]);
 
   const handlePlayAudio = (note: Note) => {
     if (playingNoteId === note.id && isTtsSpeaking) {
@@ -511,7 +531,7 @@ export const StudioPanel: React.FC<StudioPanelProps> = ({
       <div className="flex-1 overflow-y-auto px-5 pb-6 space-y-8 scrollbar-hide">
         {/* Studio Grid */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          {tools.map(tool => (
+          {filteredTools.map(tool => (
             <button 
               key={tool.id}
               onClick={() => useStudioTool(tool.id)}

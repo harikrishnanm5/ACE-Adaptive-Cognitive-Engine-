@@ -15,7 +15,7 @@ import { useAuth } from './hooks/useAuth';
 import { useNotebook } from './hooks/useNotebook';
 import { useAIServices } from './hooks/useAIServices';
 import { motion } from 'motion/react';
-import { stripMarkdown } from './lib/text';
+import { stripMarkdown, truncateContext } from './lib/text';
 
 // Components
 import { Sidebar } from './components/Sidebar';
@@ -48,7 +48,7 @@ export default function App() {
     removeNote
   } = useNotebook(user);
 
-  const { groqChatCompletion, groqProcessImage, groqTranscribeAudio, lmStudioChatCompletion } = useAIServices();
+  const { groqChatCompletion, groqProcessImage, transcribeAudio, lmStudioChatCompletion } = useAIServices();
 
   // Local State
   const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
@@ -115,19 +115,24 @@ export default function App() {
 
     try {
       const sourceContext = sources.map(s => `Source: ${s.name}\nContent: ${s.content}`).join('\n\n---\n\n');
-      const prompt = `Context from sources:\n${sourceContext}\n\nUser Question: ${input}\n\nPlease answer the question based ONLY on the provided sources. If the answer is not in the sources, say so.`;
-
-      const messages = [
-        { role: "system", content: "You are ACE (Adaptive Cognitive Engine), a high-speed research assistant. Provide concise, accurate answers based on the provided context." },
-        { role: "user", content: prompt }
-      ];
-
-      // Route based on Provider Toggle
+      
+      // Strict Provider Enforcement (No Fallback)
       let res;
       if (aiProvider === 'local') {
-        res = await lmStudioChatCompletion(messages);
+        const truncatedContext = truncateContext(sourceContext);
+        const prompt = `Context from sources:\n${truncatedContext}\n\nUser Question: ${input}\n\nPlease answer the question based ONLY on the provided sources. If the answer is not in the sources, say so.`;
+        const localMessages = [
+          { role: "system", content: "You are ACE (Adaptive Cognitive Engine). Provide concise, accurate answers based on the context." },
+          { role: "user", content: prompt }
+        ];
+        res = await lmStudioChatCompletion(localMessages);
       } else {
-        res = await groqChatCompletion(messages);
+        const prompt = `Context from sources:\n${sourceContext}\n\nUser Question: ${input}\n\nPlease answer the question based ONLY on the provided sources. If the answer is not in the sources, say so.`;
+        const cloudMessages = [
+          { role: "system", content: "You are ACE (Adaptive Cognitive Engine). Provide concise, accurate answers based on context." },
+          { role: "user", content: prompt }
+        ];
+        res = await groqChatCompletion(cloudMessages);
       }
 
       const responseText = res.choices[0]?.message?.content;
@@ -195,13 +200,13 @@ export default function App() {
 
         } else if (isAudio) {
           sourceType = 'audio';
-          content = await groqTranscribeAudio(file, file.name) || 'Could not transcribe audio.';
+          content = await transcribeAudio(file, file.name) || 'Could not transcribe audio.';
 
         } else if (isVideo) {
           sourceType = 'video';
           // Extract audio track from video and send to Whisper
           const audioBlob = await extractAudioFromVideo(file);
-          content = await groqTranscribeAudio(audioBlob, file.name.replace(/\.[^.]+$/, '.webm')) || 'Could not transcribe video.';
+          content = await transcribeAudio(audioBlob, file.name.replace(/\.[^.]+$/, '.webm')) || 'Could not transcribe video.';
         }
 
         await addSource(currentNotebookId, {
@@ -214,12 +219,16 @@ export default function App() {
           authorId: user.id
         });
       } catch (err) {
-        console.error('Error processing file:', err);
+        console.error(`❌ Error processing file "${file.name}":`, err);
+        if (err instanceof Error) {
+          console.error("Original error message:", err.message);
+          console.error("Stack trace:", err.stack);
+        }
       } finally {
         setIsProcessingSource(false);
       }
     }
-  }, [currentNotebookId, user, addSource, groqProcessImage, groqTranscribeAudio]);
+  }, [currentNotebookId, user, addSource, groqProcessImage, transcribeAudio]);
 
   // Helper: convert File to base64 string (without data URL prefix)
   async function fileToBase64(file: File): Promise<string> {
@@ -347,7 +356,7 @@ export default function App() {
     setIsGeneratingStudioContent(true);
     
     try {
-      const sourceContext = sources.map(s => `Source: ${s.name}\nContent: ${s.content}`).join('\n\n');
+      let sourceContext = sources.map(s => `Source: ${s.name}\nContent: ${s.content}`).join('\n\n');
       let prompt = "";
       switch (toolType) {
         case 'flashcards': prompt = "generate exactly 15 high-quality Q&A flashcards based on the sources. Format as a JSON array of objects with 'front' and 'back' properties. ONLY return the raw JSON array without markdown wrapping."; break;
@@ -364,12 +373,13 @@ export default function App() {
 
       if (toolType === 'audio') {
         if (aiProvider === 'local') {
+          const truncatedContext = truncateContext(sourceContext);
           const messages = [
             { role: "system", content: "You are a professional audio scriptwriter. Create a smooth, engaging monologue analyzing the source material. NO markdown, NO timestamps. The script must flow perfectly for a single voice speaking. The FIRST line MUST be just a compelling title for this talk." },
-            { role: "user", content: `SOURCE MATERIAL:\n${sourceContext}\n\nTASK: Generate the audio script now.` }
+            { role: "user", content: `SOURCE MATERIAL:\n${truncatedContext}\n\nTASK: Generate the audio script now.` }
           ];
           const completion = await lmStudioChatCompletion(messages);
-          resText = completion.choices[0]?.message?.content || "";
+          resText = completion.choices?.[0]?.message?.content || "";
         } else {
           // Step 1: Deep analysis
           const analysis = await groqChatCompletion([
@@ -394,9 +404,10 @@ export default function App() {
           resText = lines.slice(1).join('\n').trim();
         }
       } else {
+        const truncatedContext = aiProvider === 'local' ? truncateContext(sourceContext) : sourceContext;
         const messages = [
           { role: "system", content: "You are ACE. Use ONLY the provided material." },
-          { role: "user", content: `SOURCE MATERIAL:\n${sourceContext}\n\nTASK: ${prompt}` }
+          { role: "user", content: `SOURCE MATERIAL:\n${truncatedContext}\n\nTASK: ${prompt}` }
         ];
 
         let completion;
@@ -506,6 +517,7 @@ export default function App() {
               studioContent={studioContent}
               setStudioContent={setStudioContent} 
               currentNotebookId={currentNotebookId} 
+              notebookTitle={currentNotebook?.title}
               user={user}
               sources={sources} 
               notes={notes}
