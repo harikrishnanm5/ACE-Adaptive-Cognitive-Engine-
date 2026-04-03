@@ -1,45 +1,36 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, X, Loader2, Volume2, Sparkles, Brain, Zap } from 'lucide-react';
+import { Mic, X, Loader2, Volume2, Brain } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import Groq from 'groq-sdk';
+import { cn } from '../lib/utils';
+import { stripMarkdown } from '../lib/text';
+import { useAIServices } from '../hooks/useAIServices';
+import { useTTS } from '../hooks/useTTS';
 
 interface InteractiveTutorProps {
   onClose: () => void;
-  notebookId: string;
+  notebookId: string | null;
   sources: { name: string; content: string }[];
   userName: string;
+  initialContent?: string;
+  aiProvider: 'local' | 'cloud';
 }
 
-const groq = new Groq({ 
-  apiKey: process.env.GROQ_API_KEY, 
-  dangerouslyAllowBrowser: true 
-});
-
-export default function InteractiveTutor({ onClose, notebookId, sources, userName }: InteractiveTutorProps) {
+export default function InteractiveTutor({ onClose, notebookId, sources, userName, initialContent, aiProvider }: InteractiveTutorProps) {
+  const { groqChatCompletion, lmStudioChatCompletion } = useAIServices();
+  const { speak, stop: stopTts, isSpeaking: isTtsSpeaking } = useTTS();
+  
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [hasStarted, setHasStarted] = useState(false);
+  const hasGreetedRef = useRef(false);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const accumulatedTranscriptRef = useRef<string>('');
-
-  const stopSpeaking = useCallback(() => {
-    if (audioSourceRef.current) {
-      try {
-        audioSourceRef.current.stop();
-      } catch (e) {
-        // Already stopped
-      }
-      audioSourceRef.current = null;
-    }
-    setIsSpeaking(false);
-  }, []);
 
   const stopListening = useCallback(() => {
     if (silenceTimeoutRef.current) {
@@ -54,99 +45,75 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
       mediaRecorderRef.current.stop();
       mediaRecorderRef.current = null;
     }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
     setIsListening(false);
   }, []);
 
-  const speakText = async (text: string) => {
-    if (!text || isSpeaking) return;
-    
-    stopSpeaking();
-    setIsSpeaking(true);
-
-    try {
-      const response = await fetch('https://api.deepgram.com/v1/speak?model=aura-asteria-en', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Token ${process.env.DEEPGRAM_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ text })
-      });
-
-      if (!response.ok) throw new Error('TTS failed');
-
-      const arrayBuffer = await response.arrayBuffer();
-      if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext();
-      }
-      const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-      
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContextRef.current.destination);
-      
-      source.onended = () => {
-        setIsSpeaking(false);
-        // Automatically start listening if the AI asked a question
-        if (text.trim().endsWith('?')) {
-          toggleListening();
-        }
-      };
-
-      source.start(0);
-      audioSourceRef.current = source;
-    } catch (err) {
-      console.error('TTS Error:', err);
-      setIsSpeaking(false);
-    }
-  };
-
-  const getAIResponse = async (userInput: string) => {
+  const getAIResponse = async (userInput: string, forceGuidedContext?: string) => {
     setIsProcessing(true);
     setAiResponse('');
     
     try {
-      if (sources.length === 0) {
-        const noSourceMessage = "I'm ready to help, but your notebook is empty. Please add at least one source (like a document, URL, or video) so we can start our lesson!";
-        setAiResponse(noSourceMessage);
-        await speakText(noSourceMessage);
-        setIsProcessing(false);
-        return;
+      const sourceContext = sources.map(s => `Source: ${s.name}\nContent: ${s.content}`).join('\n\n');
+      const messages = [
+        { 
+          role: "system", 
+          content: `You are ACE (Adaptive Cognitive Engine), an interactive AI tutor. 
+          User's name: ${userName}. 
+          Context from sources: ${sourceContext}.
+          ${forceGuidedContext ? `SPECIAL CONTEXT (Guided Mode): ${forceGuidedContext}. Explain these concepts proactively.` : ''}
+          Your task: Have a natural, conversation-based teaching session. 
+          Keep responses concise (max 3-4 sentences) and highly engaging for voice conversation. 
+          Encourage the user to ask questions.` 
+        }
+      ];
+
+      if (userInput) {
+        messages.push({ role: "user", content: userInput });
+      } else if (forceGuidedContext) {
+        // Much shorter, more reactive proactive prompt
+        messages.push({ role: "user", content: "I've just listened to the audio overview. Greet me briefly and ask how you can help clarify these specific concepts." });
       }
 
-      const sourceContext = sources.map(s => `Source: ${s.name}\nContent: ${s.content}`).join('\n\n');
-      const completion = await groq.chat.completions.create({
-        messages: [
-          { 
-            role: "system", 
-            content: `You are ACE (Adaptive Cognitive Engine), an interactive AI tutor. 
-            User's name: ${userName}. 
-            Context from sources: ${sourceContext}.
-            Your task: Have a natural, conversation-based teaching session. 
-            Keep responses concise (max 3-4 sentences) and highly engaging for voice conversation. 
-            Encourage the user to ask questions.` 
-          },
-          { role: "user", content: userInput }
-        ],
-        model: "llama-3.3-70b-versatile",
-        temperature: 0.7,
-      });
+      // Use Selected Provider (Local vs Cloud)
+      let response = "";
+      try {
+        if (aiProvider === 'local') {
+          const completion = await lmStudioChatCompletion(messages);
+          response = completion.choices[0]?.message?.content || "";
+        } else {
+          const completion = await groqChatCompletion(messages, "llama-3.1-8b-instant");
+          response = completion.choices[0]?.message?.content || "";
+        }
+      } catch (err) {
+        console.error("AI Error:", err);
+        response = aiProvider === 'local' 
+          ? "Local AI is currently offline. Please ensure LM Studio is running on localhost 1234." 
+          : "Cloud AI hit a rate limit. Please switch to Local in the chat header.";
+      }
 
-      const response = completion.choices[0]?.message?.content || "I'm sorry, I couldn't process that.";
-      setAiResponse(response);
-      await speakText(response);
+      if (!response) throw new Error("No AI response");
+      
+      const cleanResponse = stripMarkdown(response);
+      setAiResponse(cleanResponse);
+      // Start talking and listen automatically when done
+      await speak(cleanResponse, () => {
+        if (onClose) toggleListening();
+      });
     } catch (err) {
       console.error('AI Error:', err);
+      setAiResponse("I'm having trouble connecting to my brain right now.");
     } finally {
       setIsProcessing(false);
     }
   };
 
   const toggleListening = async () => {
-    // If currently speaking or processing, an interruption occurred. 
-    // We want to stop everything and start listening fresh.
-    if (isSpeaking || isProcessing) {
-      stopSpeaking();
+    if (isTtsSpeaking || isProcessing) {
+      stopTts();
       setIsProcessing(false);
       setAiResponse('');
     }
@@ -161,6 +128,7 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
       accumulatedTranscriptRef.current = '';
       
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
 
@@ -188,7 +156,6 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
             accumulatedTranscriptRef.current += ' ' + transcriptText;
           }
 
-          // Reset silence timeout
           if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
           
           silenceTimeoutRef.current = setTimeout(() => {
@@ -198,7 +165,7 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
               getAIResponse(finalInput);
               accumulatedTranscriptRef.current = '';
             }
-          }, 2000); // 2 seconds silence
+          }, 2000);
         }
       };
 
@@ -209,12 +176,38 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
     }
   };
 
+  // Clean up on unmount - force stop everything immediately
   useEffect(() => {
     return () => {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.cancel();
+      stopTts();
       stopListening();
-      stopSpeaking();
     };
-  }, [stopListening, stopSpeaking]);
+  }, [stopTts, stopListening]);
+
+  // Proactive start effect
+  useEffect(() => {
+    if (!hasStarted) {
+      setHasStarted(true);
+      
+      // Stop background audio IMMEDIATELY
+      window.dispatchEvent(new CustomEvent('ace-stop-audio'));
+      
+      if (hasGreetedRef.current) return;
+      hasGreetedRef.current = true;
+
+      if (initialContent) {
+        getAIResponse('', initialContent);
+      } else if (sources.length > 0) {
+        getAIResponse("Hi! Can you give me a quick welcome and introduce these concepts based on my notebook?");
+      } else {
+        const welcome = `Hi ${userName}, I'm ACE. Add some sources to your notebook so we can start our interactive lesson!`;
+        setAiResponse(welcome);
+        speak(welcome);
+      }
+    }
+  }, [hasStarted, initialContent, userName, sources.length]);
 
   return (
     <motion.div 
@@ -233,22 +226,38 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
       <div className="max-w-3xl w-full flex flex-col items-center space-y-12">
         <div className="flex flex-col items-center space-y-4">
           <div className="relative">
-            <div className={`absolute inset-0 bg-indigo-500/20 blur-3xl rounded-full transition-all duration-1000 ${isSpeaking || isListening ? 'scale-150 opacity-100' : 'scale-100 opacity-0'}`} />
-            <div className={`relative w-40 h-40 rounded-[3rem] border border-white/10 flex items-center justify-center shadow-2xl transition-all duration-500 bg-slate-900 ${isSpeaking ? 'border-indigo-500/50 scale-105' : ''}`}>
+            <div className={cn(
+              "absolute inset-0 blur-3xl rounded-full transition-all duration-1000",
+              isTtsSpeaking ? "bg-red-500/30 scale-150 opacity-100" : 
+              (isListening ? "bg-blue-500/30 scale-150 opacity-100" : "bg-indigo-500/20 scale-100 opacity-0")
+            )} />
+            <div className={cn(
+              "relative w-40 h-40 rounded-[3rem] border border-white/10 flex items-center justify-center shadow-2xl transition-all duration-500 bg-slate-900",
+              isTtsSpeaking && "border-red-500/50 scale-105 shadow-red-500/20",
+              isListening && "border-blue-500/50 scale-105 shadow-blue-500/20"
+            )}>
               {isProcessing ? (
                 <Loader2 className="w-16 h-16 text-indigo-400 animate-spin" />
               ) : (
-                <Brain className={`w-16 h-16 transition-all duration-500 ${isSpeaking ? 'text-indigo-400' : 'text-slate-700'}`} />
+                <Brain className={cn(
+                  "w-16 h-16 transition-all duration-500",
+                  isTtsSpeaking ? "text-red-400" : (isListening ? "text-blue-400" : "text-slate-700")
+                )} />
               )}
             </div>
           </div>
           <div className="text-center">
             <h2 className="text-3xl font-display font-bold text-white tracking-tight">ACE Conversational Tutor</h2>
-            <p className="text-indigo-400 font-bold uppercase tracking-widest text-xs mt-2">Interactive Mode Active</p>
+            <p className={cn(
+              "font-bold uppercase tracking-widest text-xs mt-2 transition-colors",
+              isTtsSpeaking ? "text-red-400" : (isListening ? "text-blue-400" : "text-indigo-400")
+            )}>
+              {isTtsSpeaking ? 'AI Explaining concepts...' : (isListening ? 'Listening to you...' : 'Interactive Mode Active')}
+            </p>
           </div>
         </div>
 
-        <div className="w-full space-y-8 min-h-[200px] flex flex-col items-center justify-center text-center">
+        <div className="w-full space-y-8 min-h-[200px] flex flex-col items-center justify-center text-center px-4">
           <AnimatePresence mode="wait">
             {transcript && (
               <motion.div 
@@ -268,7 +277,10 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
                 key={aiResponse}
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="p-8 bg-indigo-600/10 border border-indigo-500/20 rounded-[2.5rem] shadow-2xl max-w-2xl"
+                className={cn(
+                  "p-8 border rounded-[2.5rem] shadow-2xl max-w-2xl transition-colors",
+                  isTtsSpeaking ? "bg-red-500/5 border-red-500/20" : "bg-indigo-600/10 border-indigo-500/20"
+                )}
               >
                 <p className="text-xl font-medium text-white leading-relaxed">{aiResponse}</p>
               </motion.div>
@@ -280,30 +292,24 @@ export default function InteractiveTutor({ onClose, notebookId, sources, userNam
           <button 
             onClick={toggleListening}
             disabled={isProcessing}
-            className={`w-24 h-24 rounded-full flex items-center justify-center transition-all shadow-2xl disabled:opacity-50 ${isListening ? 'bg-red-500 text-white animate-pulse shadow-red-500/20' : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-500/20'}`}
+            className={cn(
+              "w-24 h-24 rounded-full flex items-center justify-center transition-all shadow-2xl disabled:opacity-50",
+              isListening ? "bg-blue-500 text-white animate-pulse shadow-blue-500/40" : 
+              (isTtsSpeaking ? "bg-red-500 text-white animate-pulse shadow-red-500/40" : 
+              "bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-500/20")
+            )}
           >
-            {isListening ? <MicOff className="w-8 h-8" /> : (isSpeaking ? <Zap className="w-8 h-8 animate-pulse" /> : <Mic className="w-8 h-8" />)}
+            <Mic className="w-8 h-8" />
           </button>
           
-          {isSpeaking && (
+          {isTtsSpeaking && (
             <button 
-              onClick={stopSpeaking}
-              className="p-4 bg-white/5 hover:bg-white/10 rounded-2xl text-slate-300 transition-all"
+              onClick={stopTts}
+              className="p-4 bg-white/5 hover:bg-white/10 rounded-2xl text-slate-300 transition-all border border-red-500/20"
             >
-              <Volume2 className="w-6 h-6" />
+              <Volume2 className="w-6 h-6 text-red-400" />
             </button>
           )}
-        </div>
-
-        <div className="flex gap-4">
-          <div className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/5 rounded-xl">
-            <Zap className="w-4 h-4 text-orange-400 shadow-lg shadow-orange-500/20" />
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Groq Llama 3</span>
-          </div>
-          <div className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/5 rounded-xl">
-            <Sparkles className="w-4 h-4 text-blue-400 shadow-lg shadow-blue-500/20" />
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Deepgram Nova-2</span>
-          </div>
         </div>
       </div>
     </motion.div>
